@@ -1,0 +1,5 @@
+pywebview
+PyMuPDF
+Pillow
+img2pdf
+pypdf
