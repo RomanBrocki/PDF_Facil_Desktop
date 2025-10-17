@@ -161,6 +161,8 @@ let keep  = [];
 let rotate= [];
 let level_page = [];
 let filesInMemory = [];     // Array<File> acumulado (apenas para lista)
+let sentCount = 0; // quantos arquivos já foram enviados ao bridge.preview
+
 
 const VALID_LEVELS = new Set(['none','min','med','max']);
 function normalizeLevel(v){ return VALID_LEVELS.has(v) ? v : 'none'; }
@@ -210,16 +212,44 @@ fileInput.addEventListener('change', async ()=>{
 });
 
 // Limpar
-$('#btnClear').addEventListener('click', ()=>{
-  filesInMemory = [];
-  token = null; items=[]; order=[]; keep=[]; rotate=[]; level_page=[];
-  $('#grid').innerHTML='';
-  $('#downloadLink').style.display='none';
-  $('#btnProcess').disabled = true;
-  $('#btnEstimate').disabled = true;
-  renderFileList();
-  setStatus('Aguardando arquivos…');
+$('#btnClear').addEventListener('click', async () => {
+  try {
+    // zera ponte (Python)
+    if (window.pywebview?.api?.reset) {
+      await window.pywebview.api.reset();
+    }
+
+    // zera estado do front
+    filesInMemory = [];
+    sentCount = 0;                              // <<< ESSENCIAL
+    items = [];
+    order = [];
+    keep = [];
+    rotate = [];
+    level_page = [];
+    // mantém a seleção global visual como está (opcional): 
+    // se quiser zerar também, faça lvlGlobalValue = 'none' e atualize as pílulas.
+    if (typeof syncGlobalPills === 'function') syncGlobalPills();
+
+    // limpa input file
+    const fi = document.getElementById('fileInput');
+    if (fi) fi.value = '';
+
+    // desativa ações e limpa grid
+    $('#btnProcess').disabled = true;
+    $('#btnEstimate').disabled = true;
+    $('#downloadLink').style.display = 'none';
+
+    const grid = document.getElementById('grid');
+    if (grid) grid.innerHTML = '';
+
+    setStatus('Aguardando arquivos…');
+  } catch (e) {
+    console.error(e);
+    alert('Erro ao limpar: ' + e.message);
+  }
 });
+
 
 function renderFileList(){
   const box = $('#fileList'); box.innerHTML='';
@@ -248,26 +278,41 @@ function fileToB64Obj(file){
 }
 // PREVIEW do backend
 async function doPreview(){
-  if(!filesInMemory.length){ setStatus('Aguardando arquivos…'); return; }
+  // delta de arquivos novos desde a última prévia
+  const newSlice = filesInMemory.slice(sentCount);
+  if(!newSlice.length){ setStatus('Nada novo para adicionar.'); return; }
   setStatus('Processando arquivos…');
 
   try{
-    // Envia TODOS os acumulados (sem FormData / sem fetch)
     const toSend = [];
-    for (const f of filesInMemory){
+    for (const f of newSlice){
       toSend.push(await fileToB64Obj(f));
     }
-
     const data = await window.pywebview.api.preview(toSend);
     if (data.error) throw new Error(data.error);
 
-    // monta items como antes (sem token)
-    items = data.items.map((it, idx)=>({ ...it, rotation:0, keep:true, level:'none', __orig: idx }));
-    order = items.map(it=>({src_id:it.src_id,page_index:it.page_index}));
-    keep  = items.map(()=>true);
-    rotate= items.map(()=>0);
-    level_page = items.map(()=> 'none' );
+    const oldLen = items.length;
+    const newItems = data.items.map((it) => ({
+      ...it,
+      rotation: 0,
+      keep: true,
+      level: lvlGlobalValue,   // novos herdam o global atual
+      __orig: oldLen + (it.page_index ?? 0)
+    }));
+    items = items.concat(newItems);
 
+    // (re)espelhar arrays a partir de 'items' sem perder estado antigo
+    order      = items.map(it => ({ src_id: it.src_id, page_index: it.page_index }));
+    keep       = items.map(it => it.keep);
+    rotate     = items.map(it => it.rotation);
+    level_page = items.map(it => it.level);
+    sentCount = filesInMemory.length; 
+    // ⬇️ REAPLICA A ORDENAÇÃO GLOBAL ESCOLHIDA (insira aqui)
+    const currentSort = $('#sortSel').value;
+    $('#sortSel').dispatchEvent(new Event('change'));  // dispara o handler de sort
+    // opcional: manter pílulas globais coerentes
+    if (typeof syncGlobalPills === 'function') syncGlobalPills();
+    // agora renderiza
     renderGrid();
     $('#btnProcess').disabled = false;
     $('#btnEstimate').disabled = false;

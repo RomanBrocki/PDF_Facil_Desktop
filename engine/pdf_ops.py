@@ -165,16 +165,7 @@ def _is_image_only(page: "fitz.Page") -> bool:
 
 
 def estimate_pdf_size(pdf_bytes: bytes, level: str) -> int:
-    """Estima o tamanho final de um PDF após aplicar um nível de compressão.
-
-    Args:
-        pdf_bytes (bytes): PDF de entrada.
-        level (str): 'none'|'min'|'med'|'max'.
-
-    Returns:
-        int: Tamanho estimado em bytes do PDF resultante.
-    """
-
+    """Estima o tamanho final de um PDF após aplicar um nível de compressão."""
     params = LEVELS.get(level or "none", LEVELS["none"])
     mode = params["mode"]
     dpi = params["dpi"]
@@ -183,7 +174,7 @@ def estimate_pdf_size(pdf_bytes: bytes, level: str) -> int:
     if mode == "none":
         return len(pdf_bytes)
 
-    # "all": renderiza todas as páginas -> JPEG -> converte p/ PDF
+    # "all": rasteriza todas as páginas
     if mode == "all":
         doc = fitz.open("pdf", pdf_bytes)
         jpg_pages = []
@@ -194,13 +185,12 @@ def estimate_pdf_size(pdf_bytes: bytes, level: str) -> int:
             pix = pg.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
             jpg_pages.append(pix.tobytes("jpeg", jpg_quality=jpg_q))
             del pix
-
         doc.close()
         try:
             est_pdf = cast(bytes, img2pdf.convert(jpg_pages))
         except Exception:
             est_pdf = b"".join(jpg_pages) + b"\x00" * (1024 * len(jpg_pages))
-        return len(est_pdf)
+        return min(len(est_pdf), len(pdf_bytes))
 
     # "smart": rasteriza só páginas imagem-only; copia as demais
     if mode == "smart":
@@ -216,7 +206,6 @@ def estimate_pdf_size(pdf_bytes: bytes, level: str) -> int:
             pix = page_obj.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
             img_bytes = pix.tobytes("jpeg", jpg_quality=jpeg_q)
             del pix
-
             rect = page_obj.rect
             p = dst_doc.new_page(width=rect.width, height=rect.height)
             p.insert_image(rect, stream=img_bytes)
@@ -228,26 +217,20 @@ def estimate_pdf_size(pdf_bytes: bytes, level: str) -> int:
             else:
                 _copy_page(dst, src, i)
 
-
-        est_bytes = dst.write(garbage=4, deflate=True, clean=True)# pyright: ignore[reportArgumentType]
+        est_bytes = dst.write(garbage=4, deflate=True, clean=True)  # pyright: ignore[reportArgumentType]
         dst.close()
         src.close()
-        return len(est_bytes)
+        return min(len(est_bytes), len(pdf_bytes))
 
+    # fallback (modo desconhecido): não mexe
     return len(pdf_bytes)
 
+
 def estimate_pdf_page_size(pdf_bytes: bytes, page_idx: int, level: str) -> int:
-    """Estima o tamanho de UMA página após aplicar um nível.
-
-    Args:
-        pdf_bytes (bytes): PDF de origem.
-        page_idx (int): Índice 0-based da página.
-        level (str): 'none'|'min'|'med'|'max'.
-
-    Returns:
-        int: Tamanho estimado em bytes para a página empacotada em PDF.
     """
-
+    Estima o tamanho de UMA página após aplicar um nível, com guard-rail:
+    nunca retorna maior que a própria página em 'none'.
+    """
     params = LEVELS.get(level or "none", LEVELS["none"])
     mode = params["mode"]; dpi = params["dpi"]; jpg_q = params["jpg_q"]
 
@@ -256,14 +239,17 @@ def estimate_pdf_page_size(pdf_bytes: bytes, page_idx: int, level: str) -> int:
         doc.close()
         return 0
 
-    pg = doc.load_page(page_idx)
+    # base_len = tamanho 1:1 da página
+    base_tmp = fitz.open()
+    base_tmp.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
+    base_len = len(base_tmp.write(garbage=4, deflate=True, clean=True))  # pyright: ignore[reportArgumentType]
+    base_tmp.close()
 
     if mode == "none":
-        tmp = fitz.open()
-        tmp.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
-        est = len(tmp.write(garbage=4, deflate=True, clean=True))  # pyright: ignore[reportArgumentType]
-        tmp.close(); doc.close()
-        return est
+        doc.close()
+        return base_len
+
+    pg = doc.load_page(page_idx)
 
     if mode == "all":
         dpi_eff = _cap_dpi_for_page(pg, dpi)
@@ -271,13 +257,12 @@ def estimate_pdf_page_size(pdf_bytes: bytes, page_idx: int, level: str) -> int:
         pix = pg.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
         jpg_b = pix.tobytes("jpeg", jpg_quality=jpg_q)
         del pix
-
         try:
             est_pdf = cast(bytes, img2pdf.convert(jpg_b))
         except Exception:
             est_pdf = jpg_b + b"\x00" * 1024
         doc.close()
-        return len(est_pdf)
+        return min(len(est_pdf), base_len)
 
     if mode == "smart":
         if _is_image_only(pg):
@@ -286,22 +271,20 @@ def estimate_pdf_page_size(pdf_bytes: bytes, page_idx: int, level: str) -> int:
             pix = pg.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
             jpg_b = pix.tobytes("jpeg", jpg_quality=jpg_q)
             del pix
-
             try:
                 est_pdf = cast(bytes, img2pdf.convert(jpg_b))
             except Exception:
                 est_pdf = jpg_b + b"\x00" * 1024
             doc.close()
-            return len(est_pdf)
+            return min(len(est_pdf), base_len)
 
-        tmp = fitz.open()
-        tmp.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
-        est = len(tmp.write(garbage=4, deflate=True, clean=True))  # pyright: ignore[reportArgumentType]
-        tmp.close(); doc.close()
-        return est
+        # senão, cópia 1:1
+        doc.close()
+        return base_len
 
     doc.close()
-    return 0
+    return base_len
+
 
 
 def estimate_image_pdf_size(img_bytes: bytes, level: str) -> int:
@@ -593,63 +576,64 @@ def merge_pages(
             continue
 
         # kind == 'pdf'
-        try:
+        if kind == 'pdf':
             src = fitz.open("pdf", data)
-            page_idx = max(0, min(page_idx, src.page_count - 1))
-            pg = src.load_page(page_idx)
-
-            if not level or level == "none":
-                # cópia 1:1 da página
-                dst.insert_pdf(src, from_page=page_idx, to_page=page_idx)
-                if angle:
-                    dst[-1].set_rotation(angle)  # pyright: ignore[reportAttributeAccessIssue]
+            if page_idx < 0 or page_idx >= src.page_count:
                 src.close()
                 continue
 
-            # rasterização desta página respeitando LEVELS (mesma lógica da compressão)
-            params = LEVELS.get(level, LEVELS["none"])
-            mode = params["mode"]
-            dpi = params["dpi"]
-            jpg_q = params["jpg_q"]
+            # 1) base: bytes da página 1:1 (nenhum)
+            base_doc = fitz.open()
+            base_doc.insert_pdf(src, from_page=page_idx, to_page=page_idx)
+            base_bytes = base_doc.write(garbage=4, deflate=True, clean=True)  # pyright: ignore[reportArgumentType]
+            base_doc.close()
 
-            if mode == "smart":
-                # só rasteriza se for 'imagem-only'; senão, copia 1:1
-                if _is_image_only(pg):
-                    pix = pg.get_pixmap(dpi=dpi, alpha=False)  # pyright: ignore[reportAttributeAccessIssue]
-                    img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_q)
-                    rect = pg.rect
-                    p = dst.new_page(width=rect.width, height=rect.height) # pyright: ignore[reportAttributeAccessIssue]
-                    p.insert_image(rect, stream=img_bytes)
-                    if angle:
-                        dst[-1].set_rotation(angle)  # pyright: ignore[reportAttributeAccessIssue]
-                else:
-                    dst.insert_pdf(src, from_page=page_idx, to_page=page_idx)
-                    if angle:
-                        dst[-1].set_rotation(angle)  # pyright: ignore[reportAttributeAccessIssue]
+            # 2) candidatos por nível (respeitando imagem-only ou all)
+            #    — geramos o nível pedido E níveis "mais fracos" para garantir monotonicidade
+            # helpers locais
+            def _cand(level_key: str) -> bytes:
+                params = LEVELS.get(level_key, LEVELS["none"])
+                mode = params["mode"]; dpi = params["dpi"]; jpg_q = params["jpg_q"]
+                pg = src.load_page(page_idx)
 
-            elif mode == "all":
-                # rasteriza esta página
-                pix = pg.get_pixmap(dpi=dpi, alpha=False)  # pyright: ignore[reportAttributeAccessIssue]
-                img_bytes = pix.tobytes("jpeg", jpg_quality=jpg_q)
-                rect = pg.rect
-                p = dst.new_page(width=rect.width, height=rect.height) # pyright: ignore[reportAttributeAccessIssue]
-                p.insert_image(rect, stream=img_bytes)
-                if angle:
-                    dst[-1].set_rotation(angle)  # pyright: ignore[reportAttributeAccessIssue]
+                if mode == "none":
+                    return base_bytes
+
+                if mode == "smart" and not _is_image_only(pg):
+                    # página não é imagem-only → copia 1:1
+                    return base_bytes
+
+                # rasteriza (all, ou smart+image-only)
+                dpi_eff = _cap_dpi_for_page(pg, dpi)
+                mat = fitz.Matrix(dpi_eff/72.0, dpi_eff/72.0)
+                pix = pg.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
+                jpg_b = pix.tobytes("jpeg", jpg_quality=jpg_q)
+                del pix
+                try:
+                    return cast(bytes, img2pdf.convert(jpg_b))
+                except Exception:
+                    return jpg_b  # fallback
+
+            # gera candidatos conforme o nível pedido
+            if level == "min":
+                cand_min = _cand("min")
+                chosen = min((base_bytes, cand_min), key=len)
+            elif level == "med":
+                cand_min = _cand("min")
+                cand_med = _cand("med")
+                chosen = min((base_bytes, cand_min, cand_med), key=len)  # garante med ≤ min
+            elif level == "max":
+                cand_min = _cand("min")
+                cand_med = _cand("med")
+                cand_max = _cand("max")
+                chosen = min((base_bytes, cand_min, cand_med, cand_max), key=len)  # garante max ≤ med ≤ min
             else:
-                # fallback: cópia crua
-                dst.insert_pdf(src, from_page=page_idx, to_page=page_idx)
-                if angle:
-                    dst[-1].set_rotation(angle)  # pyright: ignore[reportAttributeAccessIssue]
+                chosen = base_bytes  # none
 
+            # insere a versão *menor* (guard-rail efetivo)
+            with fitz.open("pdf", chosen) as one:
+                dst.insert_pdf(one)
             src.close()
-
-        except Exception:
-            # falha isolada numa página não bloqueia o restante
-            try:
-                src.close()
-            except Exception:
-                pass
             continue
 
     out_bytes = dst.write(garbage=4, deflate=True, clean=True)  # pyright: ignore[reportArgumentType]

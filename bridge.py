@@ -65,6 +65,17 @@ class Api:
             page = doc.load_page(page_index)
             pix = page.get_pixmap(matrix=mat, alpha=False)
             return Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
+    def reset(self) -> dict:
+        """
+        Limpa todo o estado da ponte (arquivos, páginas e cache).
+        """
+        try:
+            self.src_files.clear()
+            self.pages.clear()
+            self.page_images_cache.clear()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
 
     def _ensure_page_image(self, ref: PageRef) -> Image.Image:
@@ -131,11 +142,6 @@ class Api:
 
     # ---------- API: ESTIMATE ----------
     def estimate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        payload: { order, keep, rotate, level_page, level_global }
-        Retorna: { total_before_bytes, total_after_bytes }
-        Implementação usando pdf_ops: estimativa por página, sem rasterizar tudo em 300dpi.
-        """
         try:
             order: List[Dict[str,int]] = payload['order']
             keep:  List[bool]          = payload['keep']
@@ -146,8 +152,8 @@ class Api:
                 lv = (lvl_pg[idx] if idx < len(lvl_pg) and lvl_pg[idx] in ('none','min','med','max') else None)
                 return lv or (lvl_gl if lvl_gl in ('none','min','med','max') else 'none')
 
-            before = 0
-            after  = 0
+            total_before = 0
+            total_after  = 0
 
             for i, refd in enumerate(order):
                 if not keep[i]:
@@ -156,18 +162,21 @@ class Api:
                 sf = self.src_files[src_id]
                 is_pdf = (sf.mime.lower().endswith('/pdf') or sf.name.lower().endswith('.pdf'))
 
-                # "Antes" = tamanho estimado copiando 1:1 (level='none')
                 if is_pdf:
-                    before += estimate_pdf_page_size(sf.data, page_index, 'none')
-                    after  += estimate_pdf_page_size(sf.data, page_index, level_of(i))
+                    base_i = estimate_pdf_page_size(sf.data, page_index, 'none')
+                    cand_i = estimate_pdf_page_size(sf.data, page_index, level_of(i))
                 else:
-                    before += estimate_image_pdf_size(sf.data, 'none')
-                    after  += estimate_image_pdf_size(sf.data, level_of(i))
+                    base_i = estimate_image_pdf_size(sf.data, 'none')
+                    cand_i = estimate_image_pdf_size(sf.data, level_of(i))
 
-            return {'total_before_bytes': before, 'total_after_bytes': after}
+                total_before += base_i
+                total_after  += min(cand_i, base_i)
+
+            return {'total_before_bytes': total_before, 'total_after_bytes': total_after}
         except Exception as e:
             traceback.print_exc()
             return {'error': str(e)}
+
 
 
     def _is_pdf_src(self, src_id:int) -> bool:
