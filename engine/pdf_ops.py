@@ -633,8 +633,17 @@ def merge_pages(
             # insere a versão *menor* (guard-rail efetivo)
             with fitz.open("pdf", chosen) as one:
                 dst.insert_pdf(one)
+
+            # ➜ aplicar rotação na última página (se houver)
+            if angle:
+                try:
+                    dst[-1].set_rotation(angle)  # 0/90/180/270 já normalizado acima
+                except Exception:
+                    pass
+
             src.close()
             continue
+
 
     out_bytes = dst.write(garbage=4, deflate=True, clean=True)  # pyright: ignore[reportArgumentType]
     dst.close()

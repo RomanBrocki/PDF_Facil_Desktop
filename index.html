@@ -121,7 +121,7 @@
           </div>
           <div class="row">
             <label class="muted">Nome do arquivo:</label>
-            <input id="fname" class="text" placeholder="arquivo_final.pdf" value="arquivo_final.pdf" />
+            <input id="fname" class="text" placeholder="nome do arquivo final" value="" />
           </div>
         </div>
         <div class="row">
@@ -141,7 +141,7 @@
     <section class="section">
       <h3>Links do projeto</h3>
       <div class="links">
-        <a class="linkpill" href="https://github.com/RomanBrocki/PDF_Facil_API" target="_blank" rel="noopener">API (PDF_Facil_API)</a>
+        <a class="linkpill" href="https://github.com/RomanBrocki/PDF_Facil_Desktop" target="_blank" rel="noopener">Repo (PDF_Facil_Desktop)</a>
         <a class="linkpill" href="https://pdf-facil.streamlit.app/" target="_blank" rel="noopener">Demo Streamlit</a>
       </div>
     </section>
@@ -221,15 +221,38 @@ $('#btnClear').addEventListener('click', async () => {
 
     // zera estado do front
     filesInMemory = [];
-    sentCount = 0;                              // <<< ESSENCIAL
+    sentCount = 0;          // <<< essencial para o delta upload
     items = [];
     order = [];
     keep = [];
     rotate = [];
     level_page = [];
-    // mantém a seleção global visual como está (opcional): 
-    // se quiser zerar também, faça lvlGlobalValue = 'none' e atualize as pílulas.
+
+    // ZERA GLOBAIS VISUAIS E DE ESTADO
+    // compressão global -> 'none'
+    lvlGlobalValue = 'none';
+
+    // marcar a pílula 'none' corretamente (usa data-lvl, não data-level)
+    document.querySelectorAll('#lvlGlobal .pill').forEach(el => el.classList.remove('active'));
+    const pillNone = document.querySelector('#lvlGlobal .pill[data-lvl="none"]');
+    if (pillNone) pillNone.classList.add('active');
+
     if (typeof syncGlobalPills === 'function') syncGlobalPills();
+
+
+    // ordenação -> 'original' (ajuste o value conforme seu select)
+    const sel = document.getElementById('sortSel');
+    if (sel) {
+      // tenta 'orig' primeiro; se não existir, usa a primeira opção
+      const canOrig = Array.from(sel.options).some(o => o.value === 'orig' || o.value === 'original');
+      sel.value = canOrig ? (sel.querySelector('option[value="orig"]') ? 'orig' : 'original')
+                          : (sel.options[0] ? sel.options[0].value : '');
+      sel.dispatchEvent(new Event('change'));
+    }
+
+    // limpa input de nome e remove extensão no placeholder (opcional)
+    const fname = document.getElementById('fname');
+    if (fname) fname.value = '';
 
     // limpa input file
     const fi = document.getElementById('fileInput');
@@ -242,13 +265,15 @@ $('#btnClear').addEventListener('click', async () => {
 
     const grid = document.getElementById('grid');
     if (grid) grid.innerHTML = '';
-
+    // limpa o painel de arquivos selecionados
+    renderFileList();
     setStatus('Aguardando arquivos…');
   } catch (e) {
     console.error(e);
     alert('Erro ao limpar: ' + e.message);
   }
 });
+
 
 
 function renderFileList(){
@@ -308,7 +333,6 @@ async function doPreview(){
     level_page = items.map(it => it.level);
     sentCount = filesInMemory.length; 
     // ⬇️ REAPLICA A ORDENAÇÃO GLOBAL ESCOLHIDA (insira aqui)
-    const currentSort = $('#sortSel').value;
     $('#sortSel').dispatchEvent(new Event('change'));  // dispara o handler de sort
     // opcional: manter pílulas globais coerentes
     if (typeof syncGlobalPills === 'function') syncGlobalPills();

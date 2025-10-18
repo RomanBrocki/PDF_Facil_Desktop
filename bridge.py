@@ -195,9 +195,12 @@ class Api:
             rotate:List[int]           = payload['rotate']
             lvl_pg: List[str]          = payload.get('level_page',[])
             lvl_gl: str                = payload.get('level_global','none')
-            filename_out: str          = (payload.get('filename_out') or 'arquivo_final.pdf').strip()
-            if not filename_out.lower().endswith('.pdf'):
-                filename_out += '.pdf'
+            filename_out: str = (payload.get('filename_out') or 'arquivo_final.pdf').strip()
+
+            if filename_out.lower().endswith('.pdf'):
+                filename_suggest = filename_out[:-4]
+            else:
+                filename_suggest = filename_out
 
             def level_of(idx:int) -> str:
                 lv = (lvl_pg[idx] if idx < len(lvl_pg) and lvl_pg[idx] in ('none','min','med','max') else None)
@@ -225,7 +228,7 @@ class Api:
             # Diálogo de salvar
             dlg = webview.windows[0].create_file_dialog(
                 webview.FileDialog.SAVE,
-                save_filename=filename_out,
+                save_filename=filename_suggest,
             )
             if not dlg:
                 return {'saved': False, 'path': None}
