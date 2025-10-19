@@ -129,7 +129,7 @@ def _jpeg_bytes_with_band(
 # ===========================
 #   ESTIMATIVAS (rápidas)
 # ===========================
-def _cap_dpi_for_page(page, dpi, max_megapixels=80):
+def _cap_dpi_for_page(page, dpi, max_megapixels=5):
     """Limita o DPI efetivo para evitar > ~80MP por página (ajuste se quiser)."""
     r = page.rect
     px = (r.width * dpi / 72.0) * (r.height * dpi / 72.0)
@@ -384,8 +384,11 @@ def compress_pdf(pdf_bytes: bytes, level: str | None) -> bytes:
             jpg_pages = []
             for i in range(src.page_count):
                 pg = src.load_page(i)
-                pix = pg.get_pixmap(dpi=dpi, alpha=False)  # pyright: ignore[reportAttributeAccessIssue]
-                jpg_pages.append(pix.tobytes("jpeg", jpg_quality=jpg_q))
+                dpi_eff = _cap_dpi_for_page(pg, int(dpi or 150))
+                mat = fitz.Matrix(dpi_eff/72.0, dpi_eff/72.0)
+                pix = pg.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
+                jpg_pages.append(pix.tobytes("jpeg", jpg_quality=int(jpg_q or 75)))
+                del pix
             src.close()
             out_bytes = cast(bytes, img2pdf.convert(jpg_pages))
             return out_bytes if len(out_bytes) < len(pdf_bytes) else pdf_bytes
@@ -402,11 +405,15 @@ def compress_pdf(pdf_bytes: bytes, level: str | None) -> bytes:
                 dst_doc.insert_pdf(src_doc, from_page=i, to_page=i)
 
             def _rasterize_to(dst_doc, page_obj: "fitz.Page", dpi_val: int, jpeg_q: int):
-                pix = page_obj.get_pixmap(dpi=dpi_val, alpha=False)  # pyright: ignore[reportAttributeAccessIssue]
-                img_bytes = pix.tobytes("jpeg", jpg_quality=jpeg_q)
+                dpi_eff = _cap_dpi_for_page(page_obj, int(dpi_val or 150))
+                mat = fitz.Matrix(dpi_eff/72.0, dpi_eff/72.0)
+                pix = page_obj.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)  # pyright: ignore[reportAttributeAccessIssue]
+                img_bytes = pix.tobytes("jpeg", jpg_quality=int(jpeg_q or 75))
+                del pix
                 rect = page_obj.rect
                 p = dst_doc.new_page(width=rect.width, height=rect.height)
                 p.insert_image(rect, stream=img_bytes)
+
 
             for i in range(src.page_count):
                 page = src.load_page(i)
